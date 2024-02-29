@@ -1,53 +1,78 @@
-Migration TFC/E to Scalr
-========================
+# TV4 Migration from TFC to Scalr
+This repository contains a Python script which was used to migrate approximately 1000 workspaces including variables from Terraform Cloud to Scalr in roughly two hours. It also updates the CDK for Terraform code for all of the workspaces to switch backend to Scalr.
 
-This module helps Terraform Cloud/Enterprise users migrate their workspaces to [Scalr](https://scalr.com) remote backend.
+## Differences from [https://github.com/Scalr/terraform-scalr-migrate-tfc/](Scalr/terraform-scalr-mgirate-tfc)
+We chose to fork and modify the excellent base repository from Scalr, introducing the following changes:
 
-Prior to the migration, please do the following:
+- Migration is now done by executing a Python script instead of a Terraform module. This made it easier for us to debug the migration and felt more natural to us.
+- Selecting workspaces to migrate is now done with a full regex instead of a wildcard.
+- Refactored the code to be more in the style of what we are used to reading, which ended up being a class-based structured.
+- Migrating sensitive Terraform variables using variable backups that we stored in AWS SSM.
+- Injecting TypeScript code to redirect all of our CDK for Terraform projects to the Scalr backend without requiring updates to our internal CDKTF wrapper package which configures the Terraform backend.
 
-* Obtain a TFC/E personal or team access token. This can be done in two ways: [manually](https://app.terraform.io/app/settings/tokens) or via [terraform login](https://www.terraform.io/cli/commands/login).
-* Obtain a Scalr access token. The easiest way it to obtain via the `terraform login account-name.scalr.io` command.
-* Register a [VCS provider](https://docs.scalr.io/docs/integrations) in Scalr. Note that the registered provider must have the access to all repositories connected to the TFC/E workspaces. After the provider is created, copy the VCS provider id.
-* Obtain the Scalr account identifier. It can be found on the account dashboard.
+## Potentially TV4-specific assumptions
+The script in this repository makes a few assumptions that are specific to the way that Terraform is handled at TV4. In particular,
 
-What Terraform Cloud/Enterprise objects will be migrated:
+- All secrets are backed up in AWS SSM with parameter names like `{prefix}/{workspace}/{variable}`. This is used to be able to migrate the values of sensitive variables, which cannot be done natively as the Terraform Cloud APIs only expose values for non-sensitive variables.
+- AWS authentication uses profiles
+- The CDKTF code for all workspaces is present in a monorepo with the following structure where Terraform workspaces are named e.g. `projecta-envname-accountlabel` and `accountlabel` has a one-to-one mapping with Scalr environments. 
 
-* Organizations - Will be migrated into [Scalr environments](https://docs.scalr.com/en/latest/hierarchy.html#environments)
-* Workspaces - Will be migrated into [Scalr workspaces](https://docs.scalr.com/en/latest/workspaces.html). Only VCS based workspaces will be migrated. CLI-driven workspaces have to be [migrated manually](https://docs.scalr.com/en/latest/migration.html).  
-* Workspace variables - Terraform and non-sensitive environment variables will be created as Terraform and shell variables at the workspace level.
-* State files - The current state file of a workspace will be migrated to Scalr state storage.
-
-Usage
------
-
-* Assuming you will use the Terraform CLI, create a main.tf locally.
-* Then copy and paste the following source code and fill in the required inputs: 
-
-```hcl
-module "migrator" {
-  source = "github.com/Scalr/terraform-scalr-migrate-tfc"
-  
-  # required inputs
-  tf_token = "<tfc-token>"
-  tf_organization = "<tf-organization-name>"
-
-  scalr_account_id = "<scalr-account-id>"
-  scalr_hostname = "<scalr-hostname>"
-  scalr_token = "<scalr-token>"
-  scalr_vcs_provider_id = "<scalr-vcs-id>"
-  
-  # optional inputs
-  # by default, it takes the TFC/E organization name to name a Scalr environment after. 
-  # But users could set a custom environment name
-  scalr_environment = "<scalr-environment-ID>" 
-  # by default, the tool migrates all Terraform Cloud/Enterprise workspaces, but the user can control 
-  # which workspaces you want to migrate into Scalr.
-  workspaces = ["*"]
-  # by default, the tool locks Terraform Cloud/Enterprise workspaces in order to keep a single source of state
-  lock_tf_workspace = true
-}
+```
+cdktf-path
+└── projects
+    ├── projectA
+    │   ├── cdktf.out
+    │   │   └── stacks
+    │   │       └── envName-accountLabel
+    │   │           └── cdk.tf.json
+    │   └── main.ts
+    └── projectB
+        ├── cdktf.out
+        │   └── stacks
+        │       └── envNameB-accountLabel
+        │           └── cdk.tf.json
+        └── main.ts
 ```
 
-* Run `terraform init` and then `terraform apply`
-* After the migration is done you still have to configure the [provider configurations](https://docs.scalr.io/docs/provider-configurations) or sensitive shell variables order to authorize your pipelines.
-* After the secrets configuration is done - trigger the run to double-check workspaces work as expected and generate no changes.
+- All workspaces are on Terraform 1.5.7 or lower. If not, check the state file to ensure that `version` is 4 -- if it is, you can simply rewrite the `terraform-version` field in the state file to 1.5.7 and upload the state to a 1.5.7 workspace as the statefile format has not changed. This was the case for us, but we manually reviewed the workspaces that this applied to.
+- The main script for the CDKTF code is called `main.ts` and contains a CDKTF `App` called `app` which has a `app.synth()` call.
+
+
+## Known issues
+### Missing pagination
+The methods for listing secrets do not handle pagination. This needed to be remedied manually by running additional ad-hoc scripts, and should probably be fixed before this is used by other organizations.
+
+### Migration performance
+While we were able to migrate 1000 workspaces in 2 hours which was sufficiently fast for us to not focus more on performance optimization, the script is naïvely synchronous and would be orders of magnitude faster if rewritten to use multithreading. This would probably be worthwhile if a larger number of workspaces are to be migrated.
+
+
+## Usage
+```
+$ python main.py --help
+usage: main.py [-h] --workspace-regex WORKSPACE_REGEX --cdktf-path CDKTF_PATH --scalr-account-id SCALR_ACCOUNT_ID --vcs-id VCS_ID --scalr-hostname SCALR_HOSTNAME
+               [--tf-hostname TF_HOSTNAME] --tf-organization TF_ORGANIZATION [--aws-profile AWS_PROFILE] [--aws-region AWS_REGION] --aws-ssm-prefix AWS_SSM_PREFIX
+
+options:
+  -h, --help            show this help message and exit
+  --workspace-regex WORKSPACE_REGEX
+                        Regex to match workspaces to migrate
+  --cdktf-path CDKTF_PATH
+                        Path to the CDKTF repository
+  --scalr-account-id SCALR_ACCOUNT_ID
+                        Scalr account ID
+  --vcs-id VCS_ID       Scalr VCS ID
+  --scalr-hostname SCALR_HOSTNAME
+                        Scalr hostname
+  --tf-hostname TF_HOSTNAME
+                        Terraform Cloud hostname
+  --tf-organization TF_ORGANIZATION
+                        Terraform Cloud organization
+  --aws-profile AWS_PROFILE
+                        AWS profile to use for fetching secrets from SSM. Defaults to the AWS_PROFILE environment variable.
+  --aws-region AWS_REGION
+                        AWS region to use for fetching secrets from SSM. Defaults to the AWS_REGION environment variable.
+  --aws-ssm-prefix AWS_SSM_PREFIX
+                        AWS SSM parameter prefix. Secrets are assumed to be stored under {prefix}/{workspace_name}/{key}
+```
+
+Dependencies are listed in `requirements.txt` and can be installed with `pip install -r requirements.txt` (preferably in a virtual environment). The migration was executed with Python 3.12.1, but older versions should work fine.
