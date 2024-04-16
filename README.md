@@ -1,7 +1,7 @@
 # TV4 Migration from TFC to Scalr
 This repository contains a Python script which was used to migrate approximately 1000 workspaces including variables from Terraform Cloud to Scalr in roughly two hours. It also updates the CDK for Terraform code for all of the workspaces to switch backend to Scalr.
 
-## Differences from [https://github.com/Scalr/terraform-scalr-migrate-tfc/](Scalr/terraform-scalr-mgirate-tfc)
+## Differences from [Scalr/terraform-scalr-migrate-tfc](https://github.com/Scalr/terraform-scalr-migrate-tfc)
 We chose to fork and modify the excellent base repository from Scalr, introducing the following changes:
 
 - Migration is now done by executing a Python script instead of a Terraform module. This made it easier for us to debug the migration and felt more natural to us.
